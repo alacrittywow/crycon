@@ -13,7 +13,11 @@ Usage:
 import argparse
 from typing import Any, Dict, List, Set
 
-from db_supabase import get_supabase_client, clean_text
+from db_supabase import (
+    get_supabase_client,
+    clean_text,
+    search_candidate_ids,
+)
 
 
 def short(value: Any, max_len: int = 300) -> str:
@@ -91,121 +95,6 @@ def fetch_evidence(client, candidate_id: int) -> List[Dict[str, Any]]:
     return response.data or []
 
 
-def add_candidate_ids_from_response(
-    candidate_ids: Set[int],
-    response_data: List[Dict[str, Any]],
-    id_field: str = "id",
-) -> None:
-    for item in response_data or []:
-        value = item.get(id_field)
-
-        if value is None:
-            continue
-
-        try:
-            candidate_ids.add(int(value))
-        except ValueError:
-            continue
-
-
-def search_by_text(client, query: str, limit: int = 20) -> List[int]:
-    """
-    Ищем кандидатов по:
-    - candidates.main_username
-    - candidates.display_name
-    - profiles.username
-    - profiles.display_name
-    - contacts.value
-    - wallets.wallet_address
-    - wallets.name_service
-    """
-    query = clean_text(query)
-
-    if not query:
-        return []
-
-    candidate_ids: Set[int] = set()
-
-    # 1. candidates.main_username
-    response = (
-        client
-        .table("candidates")
-        .select("id")
-        .ilike("main_username", f"%{query}%")
-        .limit(limit)
-        .execute()
-    )
-    add_candidate_ids_from_response(candidate_ids, response.data, "id")
-
-    # 2. candidates.display_name
-    response = (
-        client
-        .table("candidates")
-        .select("id")
-        .ilike("display_name", f"%{query}%")
-        .limit(limit)
-        .execute()
-    )
-    add_candidate_ids_from_response(candidate_ids, response.data, "id")
-
-    # 3. profiles.username
-    response = (
-        client
-        .table("profiles")
-        .select("candidate_id")
-        .ilike("username", f"%{query}%")
-        .limit(limit)
-        .execute()
-    )
-    add_candidate_ids_from_response(candidate_ids, response.data, "candidate_id")
-
-    # 4. profiles.display_name
-    response = (
-        client
-        .table("profiles")
-        .select("candidate_id")
-        .ilike("display_name", f"%{query}%")
-        .limit(limit)
-        .execute()
-    )
-    add_candidate_ids_from_response(candidate_ids, response.data, "candidate_id")
-
-    # 5. contacts.value
-    response = (
-        client
-        .table("contacts")
-        .select("candidate_id")
-        .ilike("value", f"%{query}%")
-        .limit(limit)
-        .execute()
-    )
-    add_candidate_ids_from_response(candidate_ids, response.data, "candidate_id")
-
-    # 6. wallets.wallet_address
-    response = (
-        client
-        .table("wallets")
-        .select("candidate_id")
-        .ilike("wallet_address", f"%{query}%")
-        .limit(limit)
-        .execute()
-    )
-    add_candidate_ids_from_response(candidate_ids, response.data, "candidate_id")
-
-    # 7. wallets.name_service
-    response = (
-        client
-        .table("wallets")
-        .select("candidate_id")
-        .ilike("name_service", f"%{query}%")
-        .limit(limit)
-        .execute()
-    )
-    add_candidate_ids_from_response(candidate_ids, response.data, "candidate_id")
-
-    return list(candidate_ids)[:limit]
-
-
 def get_top_candidates(client, limit: int = 20) -> List[int]:
     response = (
         client
@@ -222,6 +111,7 @@ def get_top_candidates(client, limit: int = 20) -> List[int]:
         candidate_ids.append(item["id"])
 
     return candidate_ids
+
 
 def print_candidate_card(client, candidate_id: int, full: bool = False) -> None:
     candidate = fetch_candidate(client, candidate_id)
@@ -386,6 +276,10 @@ def print_candidate_card(client, candidate_id: int, full: bool = False) -> None:
     else:
         print("- none")
 
+    print("=" * 90)
+    print()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Search Mirae Web3 candidates in Supabase."
@@ -448,7 +342,8 @@ def main() -> None:
         print("  python3 search_candidate.py --top 20")
         return
 
-    candidate_ids = search_by_text(
+    # Вот здесь была старая search_by_text, теперь используем новую
+    candidate_ids = search_candidate_ids(
         client=client,
         query=args.query,
         limit=args.limit,

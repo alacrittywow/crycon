@@ -304,3 +304,157 @@ def finish_parser_job(
         .eq("id", job_id)
         .execute()
     )
+    # Добавить в конец db_supabase.py после всех существующих функций
+
+    from typing import List
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    def refresh_search_view(client: Client) -> None:
+        """Обновить материализованное представление для поиска."""
+        try:
+            client.sql("REFRESH MATERIALIZED VIEW mv_candidate_search").execute()
+            logger.info("Materialized view mv_candidate_search refreshed successfully")
+        except Exception as e:
+            logger.error(f"Failed to refresh materialized view: {e}")
+
+    def search_candidate_ids(
+            client: Client,
+            query: str,
+            limit: int = 10,
+    ) -> List[int]:
+        """
+        Умный поиск кандидатов.
+        Приоритет:
+        1) точное совпадение адреса кошелька или name_service;
+        2) точное совпадение username в профилях;
+        3) точное совпадение main_username;
+        4) синоним (known_aliases);
+        5) нечёткий поиск через pg_trgm;
+        6) запасной ILIKE.
+        """
+        if not query or not query.strip():
+            return []
+
+        query = query.strip()
+
+        # 1. Точное совпадение кошелька
+        wallet = (
+            client.table("wallets")
+            .select("candidate_id")
+            .or_(f"wallet_address.eq.{query},name_service.eq.{query}")
+            .limit(1)
+            .execute()
+        )
+        if wallet.data:
+            return [wallet.data[0]["candidate_id"]]
+
+        # 2. Точное совпадение username в profiles
+        profile = (
+            client.table("profiles")
+            .select("candidate_id")
+            .eq("username", query)
+            .limit(1)
+            .execute()
+        )
+        if profile.data:
+            return [profile.data[0]["candidate_id"]]
+
+        # 3. Точное совпадение main_username
+        candidate = (
+            client.table("candidates")
+            .select("id")
+            .eq("main_username", query)
+            .limit(1)
+            .execute()
+        )
+        if candidate.data:
+            return [candidate.data[0]["id"]]
+
+        # 4. Синоним
+        alias = (
+            client.table("known_aliases")
+            .select("candidate_id")
+            .eq("alias", query.lower())
+            .limit(1)
+            .execute()
+        )
+        if alias.data:
+            return [alias.data[0]["candidate_id"]]
+
+        # 5. Нечёткий поиск через представление
+        try:
+            fuzzy = client.rpc(
+                "search_candidates_fuzzy",
+                {"search_query": query, "limit_rows": limit},
+            ).execute()
+            if fuzzy.data:
+                return [int(row["candidate_id"]) for row in fuzzy.data]
+        except Exception as e:
+            logger.warning(f"Fuzzy search failed, falling back to ILIKE: {e}")
+
+        # 6. ILIKE fallback
+        ids = []
+        # candidates.main_username
+        resp = (
+            client.table("candidates")
+            .select("id")
+            .ilike("main_username", f"%{query}%")
+            .limit(limit)
+            .execute()
+        )
+        for r in (resp.data or []):
+            ids.append(int(r["id"]))
+
+        if len(ids) < limit:
+            resp = (
+                client.table("candidates")
+                .select("id")
+                .ilike("display_name", f"%{query}%")
+                .limit(limit)
+                .execute()
+            )
+            for r in (resp.data or []):
+                if int(r["id"]) not in ids:
+                    ids.append(int(r["id"]))
+
+        if len(ids) < limit:
+            resp = (
+                client.table("profiles")
+                .select("candidate_id")
+                .ilike("username", f"%{query}%")
+                .limit(limit)
+                .execute()
+            )
+            for r in (resp.data or []):
+                if int(r["candidate_id"]) not in ids:
+                    ids.append(int(r["candidate_id"]))
+
+        if len(ids) < limit:
+            resp = (
+                client.table("contacts")
+                .select("candidate_id")
+                .ilike("value", f"%{query}%")
+                .limit(limit)
+                .execute()
+            )
+            for r in (resp.data or []):
+                if int(r["candidate_id"]) not in ids:
+                    ids.append(int(r["candidate_id"]))
+
+        if len(ids) < limit:
+            resp = (
+                client.table("wallets")
+                .select("candidate_id")
+                .or_(
+                    f"wallet_address.ilike.%{query}%,name_service.ilike.%{query}%"
+                )
+                .limit(limit)
+                .execute()
+            )
+            for r in (resp.data or []):
+                if int(r["candidate_id"]) not in ids:
+                    ids.append(int(r["candidate_id"]))
+
+        return ids[:limit]

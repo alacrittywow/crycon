@@ -30,8 +30,11 @@ from telegram.ext import (
     ContextTypes,
 )
 
-from db_supabase import get_supabase_client, clean_text
-
+from db_supabase import (
+    get_supabase_client,
+    clean_text,
+    search_candidate_ids,
+)
 
 MAX_MESSAGE_LEN = 3900
 
@@ -158,74 +161,6 @@ def fetch_evidence(client, candidate_id: int, limit: int = 10) -> List[Dict[str,
     )
 
     return response.data or []
-
-
-def search_candidate_ids(client, query: str, limit: int = 10) -> List[int]:
-    query = clean_text(query)
-
-    if not query:
-        return []
-
-    candidate_ids = []
-
-    def add_ids(rows: List[Dict[str, Any]], field: str) -> None:
-        for row in rows or []:
-            value = row.get(field)
-
-            if value is None:
-                continue
-
-            try:
-                candidate_id = int(value)
-            except Exception:
-                continue
-
-            if candidate_id not in candidate_ids:
-                candidate_ids.append(candidate_id)
-
-    response = (
-        client
-        .table("candidates")
-        .select("id")
-        .ilike("main_username", f"%{query}%")
-        .limit(limit)
-        .execute()
-    )
-    add_ids(response.data, "id")
-
-    response = (
-        client
-        .table("profiles")
-        .select("candidate_id")
-        .ilike("username", f"%{query}%")
-        .limit(limit)
-        .execute()
-    )
-    add_ids(response.data, "candidate_id")
-
-    response = (
-        client
-        .table("contacts")
-        .select("candidate_id")
-        .ilike("value", f"%{query}%")
-        .limit(limit)
-        .execute()
-    )
-    add_ids(response.data, "candidate_id")
-
-    response = (
-        client
-        .table("wallets")
-        .select("candidate_id")
-        .or_(
-            f"wallet_address.ilike.%{query}%,name_service.ilike.%{query}%"
-        )
-        .limit(limit)
-        .execute()
-    )
-    add_ids(response.data, "candidate_id")
-
-    return candidate_ids[:limit]
 
 
 def get_top_candidate_ids(client, limit: int = 10) -> List[int]:
@@ -451,10 +386,7 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     client = get_supabase_client()
 
     candidate_ids = await asyncio.to_thread(
-        search_candidate_ids,
-        client,
-        query,
-        10,
+        search_candidate_ids, client, query, 10
     )
 
     if not candidate_ids:
